@@ -1,0 +1,51 @@
+## Core Tools Used
+### 1. Flask (Web Framework)
+- What it does : Lightweight Python web framework that handles HTTP requests/responses, routing (URLs), and renders HTML pages.
+- Used in : app.py — from flask import Flask, render_template, redirect, url_for, flash
+- Example : @app.route('/login') creates the /login URL, and render_template('login.html') shows the login page.
+### 2. Flask-SQLAlchemy (Database ORM)
+- What it does : O bject- R elational M apper — lets you use Python classes (models) instead of writing raw SQL to work with databases.
+- Used in : app.py — The User class defines the users table, and User.query.filter_by(...) runs SQL queries automatically.
+- Example : db.create_all() creates the SQLite/PostgreSQL table from the User class without writing CREATE TABLE SQL.
+### 3. Flask-WTF + WTForms (Form handling + CSRF protection)
+- What it does : Generates secure HTML forms in Python, validates input (e.g. "username required"), and auto-adds CSRF tokens to prevent hacking.
+- Used in : app.py — LoginForm class defines the username/password fields + Submit button.
+- Frontend : login.html — {{ form.hidden_tag() }} renders the CSRF token automatically.
+### 4. Flask-Login (Session management)
+- What it does : Handles the entire "logged in / logged out" state for users — sets secure cookies, remembers who's logged in, and protects pages.
+- Used in : app.py (setup) and app.py — the @login_required decorator on /home blocks unauthenticated users.
+- Example : login_user(user) starts a session after a correct password; current_user.is_authenticated checks if someone's logged in.
+### 5. Werkzeug Security (bcrypt wrapper) (Password hashing)
+- What it does : Never stores plain-text passwords! This hashes passwords with salt so even if the DB is stolen, passwords are unreadable.
+- Used in : app.py ( generate_password_hash ) and app.py ( check_password_hash ).
+- Example : "MyPass123" is stored in the DB as something like $2b$12$R8x... instead of readable text.
+### 6. Jinja2 (Template engine — built into Flask)
+- What it does : Lets you inject Python variables & logic into HTML — things like {{ form.username.label() }} render form fields, and {% if messages %} show flash alerts.
+- Used in : login.html — loops through flash messages, renders WTForms fields.
+- Also : {{ url_for('register') }} safely builds URLs — you never hardcode /register as a string.
+### 7. CSS + HTML5 (UI/Styling)
+- What it does : HTML structures the page form fields; CSS gives the purple-gradient theme, rounded corners, hover effects, responsive layout.
+- Used in : login.html (structure) + style.css (look & feel).
+- Features : .login-container centers the card, .btn-primary adds gradient buttons, .alert-danger shows red error flashes.
+### 8. SQLite (dev) / PostgreSQL (AWS prod) (Databases)
+- SQLite : Lightweight file-based DB ( instance/site.db ) — perfect for local testing, zero setup.
+- PostgreSQL on RDS : Production-grade AWS DB — auto-switched in app.py when DB_HOST / DB_USER / DB_PASSWORD env vars are set.
+- Driver : psycopg2-binary in requirements.txt lets Python talk to Postgres.
+### 9. bcrypt (Direct dependency)
+- What it does : Industry-standard adaptive password-hashing algorithm. Werkzeug uses bcrypt internally when you call generate_password_hash() — it's slow-by-design to defeat brute-force attacks.
+- In : requirements.txt
+## 🔄 How they all work together in the login flow
+```
+User types username + password → Browser POST /login
+      ↓
+Flask-WTF validates the form (CSRF check + DataRequired)
+      ↓
+Flask-SQLAlchemy: User.query.filter_by(username=...) finds user row
+      ↓
+Werkzeug: check_password_hash(user.password, input) — compares hashes
+      ↓  (if OK)
+Flask-Login: login_user(user) → sets secure session cookie
+      ↓
+redirect(url_for('home')) → Jinja2 renders home.html with Welcome, {{ username }}
+```
+That's the complete toolchain for your login page!

@@ -1,0 +1,20 @@
+{
+  "AWSEBDockerrunVersion": "1",
+  "Image": {
+    "Name": "AK_PROJECT_ECR_REGISTRY/ak-project:latest",
+    "Update": "true"
+  },
+  "Ports": [
+    {
+      "ContainerPort": "5000",
+      "HostPort": "80"
+    }
+  ],
+  "Volumes": [
+    {
+      "HostDirectory": "/var/app/instance",
+      "ContainerDirectory": "/app/instance"
+    }
+  ],
+  "Logging": "/app/logs"
+}

@@ -1,4 +1,5 @@
 
+import os
 from flask import Flask, render_template, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import FlaskForm
@@ -8,8 +9,20 @@ from flask_login import LoginManager, UserMixin, login_user, login_required, log
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your_secure_secret_key_here_change_in_production'  # Change this to a random string in production
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your_secure_secret_key_here_change_in_production')
+
+_db_host = os.environ.get('DB_HOST')
+_db_port = os.environ.get('DB_PORT', '5432')
+_db_user = os.environ.get('DB_USER')
+_db_password = os.environ.get('DB_PASSWORD')
+_db_name = os.environ.get('DB_NAME')
+
+if _db_host and _db_user and _db_password and _db_name:
+    _db_uri = f"postgresql+psycopg2://{_db_user}:{_db_password}@{_db_host}:{_db_port}/{_db_name}"
+    app.config['SQLALCHEMY_DATABASE_URI'] = _db_uri
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -75,7 +88,7 @@ def register():
 @app.route('/home')
 @login_required
 def home():
-    return render_template('home.html', title='Home')
+    return render_template('home.html', title='Home', username=current_user.username)
 
 
 @app.route('/logout')
@@ -89,4 +102,4 @@ with app.app_context():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=(os.environ.get('FLASK_DEBUG', '0') == '1'))

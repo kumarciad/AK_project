@@ -1,0 +1,63 @@
+{
+  "family": "AK_PROJECT_ENV-flask",
+  "taskRoleArn": "arn:aws:iam::AWS_ACCOUNT:role/AK_PROJECT_ENV-task-role",
+  "executionRoleArn": "arn:aws:iam::AWS_ACCOUNT:role/AK_PROJECT_ENV-task-exec-role",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "runtimePlatform": {
+    "operatingSystemFamily": "LINUX",
+    "cpuArchitecture": "X86_64"
+  },
+  "containerDefinitions": [
+    {
+      "name": "ak-project-flask",
+      "image": "AWS_ACCOUNT.dkr.ecr.AWS_REGION.amazonaws.com/ak-project:IMAGE_TAG",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 5000,
+          "hostPort": 5000,
+          "protocol": "tcp",
+          "name": "flask-5000-tcp",
+          "appProtocol": "http"
+        }
+      ],
+      "environment": [
+        { "name": "FLASK_APP", "value": "wsgi.py" },
+        { "name": "FLASK_ENV", "value": "production" },
+        { "name": "PYTHONUNBUFFERED", "value": "1" },
+        { "name": "ENVIRONMENT_NAME", "value": "AK_PROJECT_ENV" },
+        { "name": "PORT", "value": "5000" }
+      ],
+      "secrets": [
+        { "name": "SECRET_KEY", "valueFrom": "arn:aws:ssm:AWS_REGION:AWS_ACCOUNT:parameter/AK_PROJECT_ENV/flask/secret-key" },
+        { "name": "DB_HOST", "valueFrom": "arn:aws:ssm:AWS_REGION:AWS_ACCOUNT:parameter/AK_PROJECT_ENV/db/endpoint" },
+        { "name": "DB_PORT", "valueFrom": "arn:aws:ssm:AWS_REGION:AWS_ACCOUNT:parameter/AK_PROJECT_ENV/db/port" },
+        { "name": "DB_USER", "valueFrom": "arn:aws:ssm:AWS_REGION:AWS_ACCOUNT:parameter/AK_PROJECT_ENV/db/username" },
+        { "name": "DB_PASSWORD", "valueFrom": "arn:aws:ssm:AWS_REGION:AWS_ACCOUNT:parameter/AK_PROJECT_ENV/db/password" },
+        { "name": "DB_NAME", "valueFrom": "arn:aws:ssm:AWS_REGION:AWS_ACCOUNT:parameter/AK_PROJECT_ENV/db/name" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:5000/login || exit 1"],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-create-group": "true",
+          "awslogs-group": "/ecs/AK_PROJECT_ENV/flask",
+          "awslogs-region": "AWS_REGION",
+          "awslogs-stream-prefix": "flask"
+        }
+      },
+      "linuxParameters": {
+        "initProcessEnabled": true
+      }
+    }
+  ]
+}
