@@ -243,16 +243,22 @@ PYEOF
     post {
         always {
             echo 'Cleaning workspace...'
-            cleanWs(
-                cleanWhenNotBuilt: false,
-                deleteDirs: true,
-                notFailBuild: true,
-                patterns: [
-                    [pattern: '.venv/**', type: 'INCLUDE'],
-                    [pattern: 'build-artifacts/**', type: 'INCLUDE'],
-                    [pattern: '__pycache__/**', type: 'INCLUDE']
-                ]
-            )
+            script {
+                try {
+                    sh '''#!/usr/bin/env bash
+                        set +e
+                        echo "-- removing venv, build artifacts, and pycache --"
+                        rm -rf .venv build-artifacts .pytest_cache instance
+                        find . -type d -name "__pycache__" -prune -exec rm -rf {} \\; 2>/dev/null
+                        find . -type f -name "*.pyc" -delete 2>/dev/null
+                        echo "-- dirs removed OK --"
+                        true
+                    '''
+                } catch (any) {
+                    echo "WARN: non-fatal: cleanup failed (${any.getMessage()})"
+                }
+            }
+            deleteDir()
         }
         success {
             echo "Pipeline OK: Build #${BUILD_NUMBER}, Image: ${ECR_URI}:${IMAGE_TAG}"
