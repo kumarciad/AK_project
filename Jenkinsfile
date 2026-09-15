@@ -22,17 +22,17 @@ pipeline {
     parameters {
         string(
             name: 'AWS_REGION',
-            defaultValue: 'us-east-1',
-            description: 'AWS region (e.g., us-east-1, eu-west-1)'
+            defaultValue: 'ap-south-2',
+            description: 'AWS region (Hyderabad: ap-south-2)'
         )
         string(
             name: 'AWS_ACCOUNT',
-            defaultValue: '123456789012',
-            description: '12-digit AWS Account ID'
+            defaultValue: '931228356673',
+            description: '12-digit AWS Account ID (detected from log: 931228356673)'
         )
         string(
             name: 'ENVIRONMENT_NAME',
-            defaultValue: 'ak-project-prod',
+            defaultValue: 'ak-project-hyd-prod',
             description: 'Environment prefix (CFN stack: ak-project-<ENV>-infra)'
         )
         choice(
