@@ -23,6 +23,91 @@ log "▶ ECS Fargate Deploy — image=$ECR_URI"
 
 export AWS_DEFAULT_REGION="$REGION"
 
+# ---- EARLY VALIDATION: CFN stack must exist BEFORE we query outputs ----
+# User probably ran WITHOUT APPLY_CLOUDFORMATION=true in Jenkins params.
+log "▶ Checking for infrastructure CFN stack '$CFN_STACK'..."
+set +e
+STACK_STATUS="$(aws cloudformation describe-stacks \
+    --stack-name "$CFN_STACK" \
+    --region "$REGION" \
+    --query 'Stacks[0].StackStatus' \
+    --output text 2>/dev/null)"
+SET_RC=$?
+set -e
+
+if [ $SET_RC -ne 0 ] || [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
+    log ""
+    log "❌ FATAL: CloudFormation stack '$CFN_STACK' DOES NOT EXIST in region '$REGION'."
+    log ""
+    log "   REASON: In your previous Jenkins Build With Parameters, the boolean flag"
+    log "           APPLY_CLOUDFORMATION was FALSE (unchecked). The infrastructure"
+    log "           (VPC, 2 public + 2 private subnets, NAT GW, RDS Postgres, ALB,"
+    log "           ECS Cluster, SSM secrets, IAM roles, ECR repo) was NEVER CREATED,"
+    log "           so there is no ECS cluster / ALB / DB endpoint to deploy into."
+    log ""
+    log "   FIX (next Jenkins build — do this EXACTLY once, then leave unchecked):"
+    log ""
+    log "     1) Open Jenkins → Python-project → ▶ Build With Parameters"
+    log "     2) SET PARAMETERS AS FOLLOWS:"
+    log "          ☐ APPLY_CLOUDFORMATION = ☑ CHECKED (TRUE)   ← only on FIRST run!"
+    log "          CFN_DB_USER     = akadmin  (or your choice)"
+    log "          CFN_DB_PASSWORD = <NEW random 12+ char password for RDS Postgres>"
+    log "          CFN_DB_NAME     = akprojectdb"
+    log "          CFN_FLASK_SECRET= <NEW random 16+ char string used as Flask SECRET_KEY>"
+    log "          DEPLOY_TARGET   = ECS_FARGATE  (keep default)"
+    log "     3) Click BUILD."
+    log ""
+    log "   Expected runtime: Stage 4 (CloudFormation) takes 15-22 MIN the first time"
+    log "   (RDS + NAT Gateways take longest). On success stages 5-7 continue"
+    log "   automatically and deploy this image onto ECS Fargate behind the new ALB."
+    log ""
+    log "   Verify: aws cloudformation list-stacks --region $REGION \ "
+    log "              --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \ "
+    log "              --query 'StackSummaries[?StackName==\`$CFN_STACK\`]'"
+    log ""
+    exit 10
+fi
+
+case "$STACK_STATUS" in
+    CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE|IMPORT_COMPLETE)
+        log "   ✔ Stack exists. Status = $STACK_STATUS"
+        ;;
+    CREATE_IN_PROGRESS|UPDATE_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|ROLLBACK_IN_PROGRESS)
+        log "   ⚠ Stack status = '$STACK_STATUS' (still in progress). Waiting up to 25 min for completion..."
+        WAIT_MAX=150
+        for i in $(seq 1 $WAIT_MAX); do
+            STACK_STATUS="$(aws cloudformation describe-stacks --stack-name "$CFN_STACK" --region "$REGION" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo WAITING)"
+            case "$STACK_STATUS" in
+                CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE|IMPORT_COMPLETE)
+                    log "   ✔ Stack stabilized. Status = $STACK_STATUS ($i/150 waits)"
+                    break
+                    ;;
+                ROLLBACK_COMPLETE|ROLLBACK_FAILED|CREATE_FAILED|DELETE_FAILED|UPDATE_ROLLBACK_FAILED)
+                    log "   ❌ Stack failed. Status = $STACK_STATUS"
+                    log "   Run 'aws cloudformation describe-stack-events --stack-name $CFN_STACK --region $REGION' for failure reason."
+                    exit 11
+                    ;;
+            esac
+            sleep 10
+        done
+        case "$STACK_STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE|IMPORT_COMPLETE) ;;
+            *)
+                log "   ❌ Timeout waiting for stack $CFN_STACK to finish (last status: $STACK_STATUS)"
+                exit 12
+                ;;
+        esac
+        ;;
+    ROLLBACK_COMPLETE|CREATE_FAILED|ROLLBACK_FAILED|DELETE_FAILED)
+        log "   ❌ Stack in BROKEN status = '$STACK_STATUS'. Refusing to deploy."
+        log "   Fix the stack in CloudFormation console or delete it then rerun with APPLY_CLOUDFORMATION=TRUE."
+        exit 13
+        ;;
+    *)
+        log "   ⚠ Unknown stack status = '$STACK_STATUS'. Continuing anyway..."
+        ;;
+esac
+
 ECS_CLUSTER="$(get_cfn_output ECSClusterName)"
 TG_ARN="$(get_cfn_output ALBTargetGroupArn)"
 ALB_DNS="$(get_cfn_output ALBDNSName)"

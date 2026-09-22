@@ -16,6 +16,48 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 export AWS_DEFAULT_REGION="$REGION"
 
+# ---- EARLY VALIDATION: required secrets must be present & length rules ----
+log "▶ Validating required parameter inputs..."
+ABORT=0
+
+if [ -z "$DB_USER" ] || [ "${#DB_USER}" -lt 2 ]; then
+    log "   ❌ CFN_DB_USER is empty/too short. Set CFN_DB_USER in Jenkins params (min 2 chars)."
+    ABORT=1
+fi
+if [ -z "$DB_PASSWORD" ] || [ "${#DB_PASSWORD}" -lt 12 ]; then
+    log "   ❌ CFN_DB_PASSWORD is empty/too short. Set CFN_DB_PASSWORD in Jenkins params (min 12 chars — RDS master password requirement)."
+    ABORT=1
+fi
+if [ -z "$DB_NAME" ] || [ "${#DB_NAME}" -lt 2 ]; then
+    log "   ❌ CFN_DB_NAME is empty/too short. Set CFN_DB_NAME in Jenkins params (min 2 chars)."
+    ABORT=1
+fi
+if [ -z "$FLASK_SECRET" ] || [ "${#FLASK_SECRET}" -lt 16 ]; then
+    log "   ❌ CFN_FLASK_SECRET is empty/too short. Set CFN_FLASK_SECRET in Jenkins params (min 16 chars, e.g. 'head -c32 /dev/urandom | base64')."
+    ABORT=1
+fi
+
+# RDS Postgres username rules: must start with letter, alphanumeric + underscore, 1..63
+if echo "$DB_USER" | grep -Eq '^[^a-zA-Z]' || echo "$DB_USER" | grep -Eqv '^[A-Za-z][A-Za-z0-9_]*$' || [ "${#DB_USER}" -gt 63 ]; then
+    log "   ❌ CFN_DB_USER = '$DB_USER' violates RDS Postgres rules. Must start with a letter and contain only letters, digits, and underscores (max 63)."
+    ABORT=1
+fi
+
+# RDS Postgres password forbidden printable chars in AWS: no slashes, quotes, @, single-quote, backtick, space, and length 8..128
+if echo "$DB_PASSWORD" | LC_ALL=C grep -Eq '[ \x27"\x60@/\\]' || [ "${#DB_PASSWORD}" -gt 128 ]; then
+    log "   ❌ CFN_DB_PASSWORD contains characters forbidden by AWS RDS Postgres (no space, \", ', \`, @, /, \\), max length 128."
+    ABORT=1
+fi
+
+if [ $ABORT -ne 0 ]; then
+    log ""
+    log "   FIX: go back to Jenkins ▶ Build With Parameters, fill or correct the 4 params:"
+    log "         CFN_DB_USER, CFN_DB_PASSWORD, CFN_DB_NAME, CFN_FLASK_SECRET"
+    log "        (and ensure APPLY_CLOUDFORMATION is CHECKED for this run)."
+    exit 5
+fi
+log "   ✔ All required parameters pass validation (user=${DB_USER}, db=${DB_NAME}, pwlen=${#DB_PASSWORD}, secretlen=${#FLASK_SECRET})"
+
 log "▶ Validating CloudFormation template..."
 aws cloudformation validate-template --template-body file://aws_infra_cfn.yaml >/dev/null
 log "   ✔ Template valid"
