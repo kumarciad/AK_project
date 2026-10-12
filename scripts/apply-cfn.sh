@@ -130,12 +130,6 @@ if [ $RC_VAL -ne 0 ]; then
 fi
 log "   ✔ Template valid"
 
-log "▶ Checking if stack '$CFN_STACK' exists..."
-set +e
-STACK_INFO=$(aws cloudformation describe-stacks --stack-name "$CFN_STACK" 2>&1)
-RC=$?
-set -e
-
 PARAMS="ParameterKey=EnvironmentName,ParameterValue=${ENV_NAME}
 ParameterKey=DBUsername,ParameterValue=${DB_USER}
 ParameterKey=DBPassword,ParameterValue=${DB_PASSWORD}
@@ -145,10 +139,96 @@ ParameterKey=ContainerImage,ParameterValue=${CONTAINER_IMAGE}"
 
 PARAM_ARGS=$(echo "$PARAMS" | tr '\n' ' ' | sed -E 's/ +$//')
 
+# ---- PREFLIGHT: List template-declared parameters vs what we're passing (defense against mismatches)
+log "▶ Parameter mismatch preflight (declared in aws_infra_cfn.yaml vs passed from Jenkins)..."
+set +e
+TPL_PARAMS=$(aws cloudformation get-template-summary --template-body file://aws_infra_cfn.yaml --query 'Parameters[*].ParameterKey' --output text 2>/dev/null | tr '\t' '\n' | sort -u)
+RC_T=$?
+set -e
+# Parameters WE are sending via PARAM_ARGS (extract ParameterKey=...,ParameterValue= pairs)
+SENT_PARAMS=$(echo "$PARAMS" | awk -F',' '{print $1}' | awk -F'=' '{print $2}' | sort -u)
+if [ $RC_T -eq 0 ] && [ -n "$TPL_PARAMS" ]; then
+    MISSING_IN_SENT=""
+    EXTRA_IN_SENT=""
+    while IFS= read -r p; do
+        [ -z "$p" ] && continue
+        if ! echo "$SENT_PARAMS" | grep -Fxq "$p"; then
+            MISSING_IN_SENT="$MISSING_IN_SENT $p"
+        fi
+    done <<< "$TPL_PARAMS"
+    while IFS= read -r p; do
+        [ -z "$p" ] && continue
+        if ! echo "$TPL_PARAMS" | grep -Fxq "$p"; then
+            EXTRA_IN_SENT="$EXTRA_IN_SENT $p"
+        fi
+    done <<< "$SENT_PARAMS"
+    if [ -n "$MISSING_IN_SENT" ]; then
+        log "   ℹ Template-declared parameters NOT explicitly passed (will use CFN Defaults if declared):$MISSING_IN_SENT"
+    fi
+    if [ -n "$EXTRA_IN_SENT" ]; then
+        log "   ⚠ Parameters we are passing BUT template does NOT DECLARE (CloudFormation will throw ValidationError 'Unrecognized parameter parameters...'):$EXTRA_IN_SENT"
+        log "     FIX: remove these from PARAM_ARGS in apply-cfn.sh, or add them to the Parameters: section of aws_infra_cfn.yaml"
+        # Don't abort — let CFN give us the explicit error, but warn loudly
+    fi
+    log "   ✔ Parameter preflight complete"
+else
+    log "   ⚠ Skipping parameter preflight (get-template-summary did not run — likely needs IAM allow 'cloudformation:GetTemplateSummary')"
+fi
+
+log "▶ Checking if stack '$CFN_STACK' exists..."
+set +e
+STACK_INFO=$(aws cloudformation describe-stacks --stack-name "$CFN_STACK" 2>&1)
+RC=$?
+set -e
+
 OP="CREATE"
 if [ $RC -eq 0 ]; then
     EXISTING_STATUS=$(echo "$STACK_INFO" | python3 -c "import json,sys; print(json.load(sys.stdin)['Stacks'][0]['StackStatus'])" 2>/dev/null || echo "UNKNOWN")
+    if [ "$EXISTING_STATUS" = "ROLLBACK_COMPLETE" ] || [ "$EXISTING_STATUS" = "CREATE_FAILED" ]; then
+        log "   Stack '$CFN_STACK' exists but is in FAILED state ($EXISTING_STATUS) → cannot UPDATE. Deleting it automatically first and waiting for delete-complete, then CREATE fresh."
+        log "   ⚠ This will wipe the failed stack (no resources should be running). If this is NOT desired hit Ctrl-C NOW (5s grace)..."
+        sleep 5
+        aws cloudformation delete-stack --stack-name "$CFN_STACK"
+        log "▶ Waiting for delete-stack-complete (usually <3 min for a rolled-back stack)..."
+        aws cloudformation wait stack-delete-complete --stack-name "$CFN_STACK" || {
+            log "   ❌ delete-stack did not finish cleanly. Forcibly check status and delete remaining: aws cloudformation describe-stacks --region $REGION --stack-name $CFN_STACK"
+            exit 8
+        }
+        log "   ✔ Failed stack cleaned. Proceeding with CREATE."
+        # Now treat as "doesn't exist" -> create branch
+        RC=1
+    fi
+fi
+
+dump_create_failed_events() {
+    # helper: dump all resource-level CREATE_FAILED rows with full reasons (not just stack-level summary!)
+    log ""
+    log "   🔎 Resource-level CREATE_FAILED rows (the N specific validation errors are printed below individually):"
+    set +e
+    RAW=$(aws cloudformation describe-stack-events --stack-name "$1" --region "$REGION" --max-items 200 --output json 2>/dev/null)
+    if command -v jq >/dev/null 2>&1 && [ -n "$RAW" ]; then
+        echo "$RAW" | jq -r '
+def safe: . // "<null>";
+.StackEvents[]
+| select(.ResourceStatus == "CREATE_FAILED")
+| [ .Timestamp, .ResourceType, .LogicalResourceId, .ResourceStatusReason|safe ]
+| @tsv' 2>/dev/null | while IFS=$'\t' read -r TS TYP LID REA; do
+            log ""
+            log "     • [$TS] CREATE_FAILED   $TYP   $LID"
+            # wrap REA nicely, replacing literal \n with newlines inside reason
+            echo "$REA" | awk '{gsub(/\\n/,"\n           ")} {print "           Reason: "$0}'
+        done
+    else
+        # no jq: fallback to grep -A 2 for CREATE_FAILED
+        aws cloudformation describe-stack-events --stack-name "$1" --region "$REGION" --max-items 200 --output text 2>/dev/null | grep -E "CREATE_FAILED|ResourceStatusReason" | head -80 | sed 's/^/     /'
+    fi
+    set -e
+    log ""
+}
+
+if [ $RC -eq 0 ]; then
     OP="UPDATE"
+    EXISTING_STATUS=$(echo "$STACK_INFO" | python3 -c "import json,sys; print(json.load(sys.stdin)['Stacks'][0]['StackStatus'])" 2>/dev/null || echo "UNKNOWN")
     log "   Stack '$CFN_STACK' exists (status=$EXISTING_STATUS) → UPDATE operation"
     log "   Estimated wait time: 5-15 minutes (RDS modifications and SG updates are the slowest parts)."
     set +e
@@ -169,13 +249,19 @@ if [ $RC -eq 0 ]; then
             exit 0
         else
             log "❌ update-stack failed: $UPDATE_OUT"
+            # Check for Validation errors and dump resource events
+            if echo "$UPDATE_OUT" | grep -qiE "ValidationError|error(s?)\."; then
+                dump_create_failed_events "$CFN_STACK"
+            fi
             log "   Debug with: aws cloudformation describe-stack-events --stack-name $CFN_STACK --region $REGION --max-items 30"
             exit 1
         fi
     fi
     log "▶ Waiting for stack-update-complete..."
     aws cloudformation wait stack-update-complete --stack-name "$CFN_STACK" || {
-        log "   ❌ UPDATE failed. Last 20 events:"
+        log "   ❌ UPDATE failed."
+        dump_create_failed_events "$CFN_STACK"
+        log "   Last 20 events (as table):"
         aws cloudformation describe-stack-events --stack-name "$CFN_STACK" --region "$REGION" \
             --max-items 20 --output table 1>&2 || true
         exit 2
@@ -187,16 +273,30 @@ else
     log "     • RDS Postgres t3.micro single-AZ create: ~10 min"
     log "     • ALB + Target Group + Listeners: ~2 min"
     log "   Please don't cancel this job while waiting."
-    aws cloudformation create-stack \
+    set +e
+    CREATE_OUT=$(aws cloudformation create-stack \
         --stack-name "$CFN_STACK" \
         --template-body file://aws_infra_cfn.yaml \
         --capabilities CAPABILITY_NAMED_IAM CAPABILITY_IAM \
-        --parameters ${PARAM_ARGS} >/dev/null
+        --parameters ${PARAM_ARGS} 2>&1)
+    RC3=$?
+    set -e
+    if [ $RC3 -ne 0 ]; then
+        log "   ❌ create-stack call failed IMMEDIATELY:"
+        echo "$CREATE_OUT" | sed 's/^/     /'
+        # dump validation details if applicable
+        dump_create_failed_events "$CFN_STACK"
+        exit 9
+    fi
     log "▶ Waiting for stack-create-complete..."
     aws cloudformation wait stack-create-complete --stack-name "$CFN_STACK" || {
-        log "   ❌ CREATE failed. Last 30 events:"
+        log "   ❌ CREATE failed (rollback after initial validation errors)."
+        log ""
+        log "   Most probable causes: 1) Invalid RDS EngineVersion/DBInstanceClass for ap-south-2; 2) Wrong region/AZ selectors; 3) Parameter sent but undeclared in template; 4) IAM PassRole/capability missing"
+        dump_create_failed_events "$CFN_STACK"
+        log "   Top 40 stack events (as table):"
         aws cloudformation describe-stack-events --stack-name "$CFN_STACK" --region "$REGION" \
-            --max-items 30 --output table 1>&2 || true
+            --max-items 40 --output table 1>&2 || true
         exit 3
     }
 fi

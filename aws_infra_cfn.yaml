@@ -51,6 +51,12 @@ Parameters:
     Default: ""
     Description: "ECR image URI: <account>.dkr.ecr.<region>.amazonaws.com/ak-project:latest (leave empty to skip initial ECS service deployment)"
 
+  CreateECRRepo:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Whether CFN should create the ECR repo. Set to 'false' when Jenkins Stage 3 already created it (default), 'true' only on first-ever CFN run before Jenkins pipeline exists."
+
   ContainerPort:
     Type: Number
     Default: 5000
@@ -75,6 +81,7 @@ Parameters:
 
 Conditions:
   HasContainerImage: !Not [!Equals [!Ref ContainerImage, ""]]
+  CreateECRRepo: !Equals [!Ref CreateECRRepo, "true"]
 
 Resources:
 
@@ -293,12 +300,12 @@ Resources:
       DBName: !Ref DBName
       DBInstanceClass: db.t3.micro
       Engine: postgres
-      EngineVersion: "16"
+      EngineVersion: "16.4"
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
       AllocatedStorage: "20"
       MaxAllocatedStorage: "100"
-      StorageType: gp2
+      StorageType: gp3
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
         - !Ref DBSecurityGroup
@@ -308,6 +315,11 @@ Resources:
       DeletionProtection: false
       EnableIAMDatabaseAuthentication: false
       StorageEncrypted: true
+      PubliclyAccessible: false
+      CopyTagsToSnapshot: true
+      EnableCloudwatchLogsExports:
+        - postgresql
+        - upgrade
       Tags:
         - Key: Name
           Value: !Sub ${EnvironmentName}-postgres
@@ -438,6 +450,7 @@ Resources:
 
   ECRRepository:
     Type: AWS::ECR::Repository
+    Condition: CreateECRRepo
     Properties:
       RepositoryName: ak-project
       ImageScanningConfiguration:
