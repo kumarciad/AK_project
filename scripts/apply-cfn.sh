@@ -188,7 +188,20 @@ if [ $RC -eq 0 ]; then
         log "   Stack '$CFN_STACK' exists but is in FAILED state ($EXISTING_STATUS) → cannot UPDATE. Deleting it automatically first and waiting for delete-complete, then CREATE fresh."
         log "   ⚠ This will wipe the failed stack (no resources should be running). If this is NOT desired hit Ctrl-C NOW (5s grace)..."
         sleep 5
-        aws cloudformation delete-stack --stack-name "$CFN_STACK"
+        set +e
+        aws cloudformation delete-stack --stack-name "$CFN_STACK" 2>&1
+        RC_DEL=$?
+        set -e
+        if [ $RC_DEL -ne 0 ]; then
+            log ""
+            log "   ❌ delete-stack FAILED (exit $RC_DEL). Most likely cause: jenkins-deploy-bot is missing 'cloudformation:DeleteStack' permission."
+            log "      FIX (in AWS Console → IAM → Policies → JenkinsDeployAKProjectPolicy → Edit JSON):"
+            log "           Add '\"cloudformation:DeleteStack\"' to the Action list of the CloudFormationDeployScoped statement."
+            log "      OR run manually now and rerun Jenkins:"
+            log "           aws cloudformation delete-stack --region $REGION --stack-name $CFN_STACK"
+            log "           aws cloudformation wait stack-delete-complete --region $REGION --stack-name $CFN_STACK"
+            exit 8
+        fi
         log "▶ Waiting for delete-stack-complete (usually <3 min for a rolled-back stack)..."
         aws cloudformation wait stack-delete-complete --stack-name "$CFN_STACK" || {
             log "   ❌ delete-stack did not finish cleanly. Forcibly check status and delete remaining: aws cloudformation describe-stacks --region $REGION --stack-name $CFN_STACK"
